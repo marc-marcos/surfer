@@ -10,5 +10,5 @@ description = "Waveform Control Protocol (WCP) bindings for remote controlling w
 
 [dependencies]
 num.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true

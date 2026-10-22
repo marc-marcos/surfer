@@ -1,11 +1,18 @@
 use crate::{
     SystemState, WcpClientCapabilities,
+    annotation::{Annotatable, Annotation},
+    annotation_list::DEFAULT_GROUP_NAME,
+    arrow::{ArrowAnnotation, ArrowHeadMode, WavePoint, item_center_y},
+    comment::CommentMessage,
     displayed_item::{DisplayedItem, DisplayedItemRef},
+    graphics::{Anchor, GraphicsY},
     message::{Message, MessageTarget},
+    rectangle::RectAnnotation,
     wave_container::{ScopeRefExt, VariableRef, VariableRefExt},
     wave_data::WaveData,
     wave_source::{LoadOptions, WaveSource, string_to_wavesource},
 };
+use egui::Pos2;
 
 use futures::executor::block_on;
 use itertools::Itertools;
@@ -13,7 +20,9 @@ use std::sync::atomic::Ordering;
 use surfer_translation_types::ScopeRef;
 use tracing::{trace, warn};
 
-use surfer_wcp::{ItemInfo, MarkerInfo, WcpCSMessage, WcpCommand, WcpResponse, WcpSCMessage};
+use surfer_wcp::{
+    ItemInfo, MarkerInfo, WcpCSMessage, WcpCommand, WcpResponse, WcpSCMessage,
+};
 
 impl SystemState {
     pub fn handle_wcp_commands(&mut self) {
@@ -240,6 +249,248 @@ impl SystemState {
                             self.send_error("add_markers", vec![], "No waveform loaded");
                         }
                     }
+                    WcpCommand::add_arrows { arrows } => {
+                        if self.user.waves.is_some() {
+                            self.save_current_canvas(format!("Add {} arrows", arrows.len()));
+                        }
+                        if let Some(waves) = self.user.waves.as_mut() {
+                            let mut ids = vec![];
+                            let first_item = waves.items_tree.iter_visible().next().map(|n| n.item_ref);
+                            for arrow_info in arrows {
+                                let to_ref = arrow_info
+                                    .to_item
+                                    .as_ref()
+                                    .and_then(|name| resolve_item_ref(name, waves))
+                                    .or_else(|| {
+                                        arrow_info
+                                            .from_item
+                                            .as_ref()
+                                            .and_then(|name| resolve_item_ref(name, waves))
+                                    })
+                                    .or(first_item);
+
+                                let from_ref = arrow_info
+                                    .from_item
+                                    .as_ref()
+                                    .and_then(|name| resolve_item_ref(name, waves))
+                                    .or(to_ref);
+
+                                if to_ref.is_none() {
+                                    self.send_error("add_arrows", vec![], "Target item not found");
+                                    return;
+                                }
+
+                                let head_mode = if arrow_info.double_headed {
+                                    ArrowHeadMode::Double
+                                } else {
+                                    ArrowHeadMode::End
+                                };
+
+                                let num = self.annotation_id_source;
+                                self.annotation_id_source += 1;
+                                let id = egui::Id::new(("annotation", num));
+
+                                let wave_point_from = WavePoint {
+                                    time: arrow_info.from_time.clone(),
+                                    attached_item: from_ref,
+                                    screen_pos: Pos2::ZERO,
+                                };
+                                let wave_point_to = WavePoint {
+                                    time: arrow_info.to_time.clone(),
+                                    attached_item: to_ref,
+                                    screen_pos: Pos2::ZERO,
+                                };
+
+                                waves.annotation_counter += 1;
+                                let mut arrow = ArrowAnnotation::new(
+                                    id,
+                                    wave_point_from,
+                                    wave_point_to,
+                                    head_mode,
+                                    waves.annotation_counter,
+                                );
+
+                                if let (Some(from_r), Some(to_r)) = (&from_ref, &to_ref) {
+                                    if let (Some(fy), Some(ty)) = (
+                                        item_center_y(waves, from_r, 0.0),
+                                        item_center_y(waves, to_r, 0.0),
+                                    ) {
+                                        arrow.length = ty - fy;
+                                    }
+                                }
+
+                                if let Some(name) = &arrow_info.name {
+                                    arrow.set_name(name);
+                                }
+
+                                if let Some(comment_text) = &arrow_info.comment {
+                                    let c_id = egui::Id::new((
+                                        "comment_msg",
+                                        arrow.annotation_data.comment_box.message_id_source,
+                                    ));
+                                    arrow.annotation_data.comment_box.message_id_source += 1;
+                                    arrow.annotation_data.comment_box.message_chain.push(
+                                        CommentMessage {
+                                            id: c_id,
+                                            user: "wcp".to_string(),
+                                            text: comment_text.clone(),
+                                        },
+                                    );
+                                    arrow.annotation_data.show_comments = true;
+                                    arrow.annotation_data.comment_box.visible = true;
+                                }
+
+                                let new_id = arrow.get_id();
+                                waves.annotations.push(Annotation::Arrow(arrow));
+
+                                if !waves.annotation_groups.iter().any(|g| g.name == DEFAULT_GROUP_NAME) {
+                                    waves.annotation_groups.push(crate::annotation_list::AnnotationGroup {
+                                        name: String::from(DEFAULT_GROUP_NAME),
+                                        cycle_counter: 0,
+                                        annotations: Vec::new(),
+                                    });
+                                }
+                                waves.add_annotation_to_group(DEFAULT_GROUP_NAME, new_id);
+
+                                ids.push(num);
+                            }
+                            self.invalidate_draw_commands();
+                            self.send_response(WcpResponse::add_arrows { ids });
+                        } else {
+                            self.send_error("add_arrows", vec![], "No waveform loaded");
+                        }
+                    }
+                    WcpCommand::add_rectangles { rectangles } => {
+                        if self.user.waves.is_some() {
+                            self.save_current_canvas(format!("Add {} rectangles", rectangles.len()));
+                        }
+                        if let Some(waves) = self.user.waves.as_mut() {
+                            let mut ids = vec![];
+                            let first_item = waves.items_tree.iter_visible().next().map(|n| n.item_ref);
+                            let last_item = waves.items_tree.iter_visible().last().map(|n| n.item_ref);
+
+                            for rect_info in rectangles {
+                                let top_ref = match &rect_info.top_item {
+                                    Some(name) => resolve_item_ref(name, waves),
+                                    None => match &rect_info.bottom_item {
+                                        Some(name) => resolve_item_ref(name, waves),
+                                        None => first_item,
+                                    },
+                                };
+
+                                let bottom_ref = match &rect_info.bottom_item {
+                                    Some(name) => resolve_item_ref(name, waves),
+                                    None => match &rect_info.top_item {
+                                        Some(name) => resolve_item_ref(name, waves),
+                                        None => last_item,
+                                    },
+                                };
+
+                                if top_ref.is_none() || bottom_ref.is_none() {
+                                    self.send_error(
+                                        "add_rectangles",
+                                        vec![],
+                                        "Could not resolve rectangle items",
+                                    );
+                                    return;
+                                }
+
+                                let wave_from = top_ref.map(|item| GraphicsY {
+                                    item,
+                                    anchor: Anchor::Top,
+                                });
+                                let wave_to = bottom_ref.map(|item| GraphicsY {
+                                    item,
+                                    anchor: Anchor::Bottom,
+                                });
+
+                                let num = self.annotation_id_source;
+                                self.annotation_id_source += 1;
+                                let id = egui::Id::new(("annotation", num));
+
+                                waves.annotation_counter += 1;
+                                let mut rect = RectAnnotation::new(
+                                    id,
+                                    rect_info.start_time.clone(),
+                                    rect_info.end_time.clone(),
+                                    wave_from,
+                                    wave_to,
+                                    egui::Rect::ZERO,
+                                    waves.annotation_counter,
+                                );
+
+                                if let Some(name) = &rect_info.name {
+                                    rect.set_name(name);
+                                }
+
+                                if let Some(comment_text) = &rect_info.comment {
+                                    let c_id = egui::Id::new((
+                                        "comment_msg",
+                                        rect.annotation_data.comment_box.message_id_source,
+                                    ));
+                                    rect.annotation_data.comment_box.message_id_source += 1;
+                                    rect.annotation_data.comment_box.message_chain.push(
+                                        CommentMessage {
+                                            id: c_id,
+                                            user: "wcp".to_string(),
+                                            text: comment_text.clone(),
+                                        },
+                                    );
+                                    rect.annotation_data.show_comments = true;
+                                    rect.annotation_data.comment_box.visible = true;
+                                }
+
+                                let new_id = rect.get_id();
+                                waves.annotations.push(Annotation::Rect(rect));
+
+                                if !waves.annotation_groups.iter().any(|g| g.name == DEFAULT_GROUP_NAME) {
+                                    waves.annotation_groups.push(crate::annotation_list::AnnotationGroup {
+                                        name: String::from(DEFAULT_GROUP_NAME),
+                                        cycle_counter: 0,
+                                        annotations: Vec::new(),
+                                    });
+                                }
+                                waves.add_annotation_to_group(DEFAULT_GROUP_NAME, new_id);
+
+                                ids.push(num);
+                            }
+                            self.invalidate_draw_commands();
+                            self.send_response(WcpResponse::add_rectangles { ids });
+                        } else {
+                            self.send_error("add_rectangles", vec![], "No waveform loaded");
+                        }
+                    }
+                    WcpCommand::clear_annotations => {
+                        if self.user.waves.is_some() {
+                            self.save_current_canvas("Clear annotations".to_string());
+                        }
+                        if let Some(waves) = self.user.waves.as_mut() {
+                            waves.annotations.clear();
+                            for group in &mut waves.annotation_groups {
+                                group.annotations.clear();
+                            }
+                            self.invalidate_draw_commands();
+                            self.send_response(WcpResponse::ack);
+                        } else {
+                            self.send_error("clear_annotations", vec![], "No waveform loaded");
+                        }
+                    }
+                    WcpCommand::remove_annotations { ids } => {
+                        if self.user.waves.is_some() {
+                            self.save_current_canvas(format!("Remove {} annotations", ids.len()));
+                        }
+                        if let Some(waves) = self.user.waves.as_mut() {
+                            for id in ids {
+                                let anno_id = egui::Id::new(("annotation", id));
+                                waves.delete_annotation(anno_id);
+                                waves.remove_annotation_from_group(anno_id);
+                            }
+                            self.invalidate_draw_commands();
+                            self.send_response(WcpResponse::ack);
+                        } else {
+                            self.send_error("remove_annotations", vec![], "No waveform loaded");
+                        }
+                    }
                     WcpCommand::reload => {
                         self.update(Message::ReloadWaveform(false));
                         self.send_response(WcpResponse::ack);
@@ -399,6 +650,10 @@ impl SystemState {
             "load",
             "zoom_to_fit",
             "add_markers",
+            "add_arrows",
+            "add_rectangles",
+            "clear_annotations",
+            "remove_annotations",
             "set_viewport_range_to",
         ]
         .into_iter()
@@ -438,4 +693,50 @@ impl SystemState {
             .map(|node| node.item_ref)
             .collect_vec()
     }
+}
+
+fn resolve_item_ref(item_str: &str, waves: &WaveData) -> Option<DisplayedItemRef> {
+    if let Ok(id) = item_str.parse::<usize>() {
+        let item_ref = DisplayedItemRef(id);
+        if waves.displayed_items.contains_key(&item_ref) {
+            return Some(item_ref);
+        }
+    }
+    for node in waves.items_tree.iter_visible() {
+        if let Some(item) = waves.displayed_items.get(&node.item_ref) {
+            match item {
+                DisplayedItem::Variable(var) => {
+                    if var.display_name == item_str
+                        || var.manual_name.as_deref() == Some(item_str)
+                        || var.variable_ref.full_path_string() == item_str
+                    {
+                        return Some(node.item_ref);
+                    }
+                }
+                DisplayedItem::Divider(div) => {
+                    if div.name.as_deref() == Some(item_str) {
+                        return Some(node.item_ref);
+                    }
+                }
+                DisplayedItem::Marker(marker) => {
+                    if marker.name.as_deref() == Some(item_str) {
+                        return Some(node.item_ref);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for node in waves.items_tree.iter_visible() {
+        if let Some(DisplayedItem::Variable(var)) = waves.displayed_items.get(&node.item_ref) {
+            let full = var.variable_ref.full_path_string();
+            if full.ends_with(item_str) {
+                let prefix_len = full.len() - item_str.len();
+                if prefix_len == 0 || full.as_bytes().get(prefix_len - 1) == Some(&b'.') {
+                    return Some(node.item_ref);
+                }
+            }
+        }
+    }
+    None
 }

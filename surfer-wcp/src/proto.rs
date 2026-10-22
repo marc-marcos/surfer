@@ -36,6 +36,8 @@ pub enum WcpResponse {
     add_variables { ids: Vec<DisplayedItemRef> },
     add_scope { ids: Vec<DisplayedItemRef> },
     add_markers { ids: Vec<DisplayedItemRef> },
+    add_arrows { ids: Vec<u64> },
+    add_rectangles { ids: Vec<u64> },
     ack,
 }
 
@@ -91,6 +93,40 @@ pub struct MarkerInfo {
     pub time: BigInt,
     pub name: Option<String>,
     pub move_focus: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct ArrowInfo {
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub from_time: BigInt,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub to_time: BigInt,
+    #[serde(default)]
+    pub from_item: Option<String>,
+    #[serde(default)]
+    pub to_item: Option<String>,
+    #[serde(default)]
+    pub double_headed: bool,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct RectInfo {
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub start_time: BigInt,
+    #[serde(deserialize_with = "deserialize_timestamp")]
+    pub end_time: BigInt,
+    #[serde(default)]
+    pub top_item: Option<String>,
+    #[serde(default)]
+    pub bottom_item: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -192,6 +228,14 @@ pub enum WcpCommand {
         #[serde(deserialize_with = "deserialize_timestamp")]
         timestamp: BigInt,
     },
+    /// Adds the specified arrows to the view.
+    add_arrows { arrows: Vec<ArrowInfo> },
+    /// Adds the specified rectangles to the view.
+    add_rectangles { rectangles: Vec<RectInfo> },
+    /// Clears all graphical annotations from the view.
+    clear_annotations,
+    /// Removes the specified annotations by numeric ID.
+    remove_annotations { ids: Vec<u64> },
     /// Shut down the WCP server.
     // FIXME: What does this mean? Does it kill the server, the current connection or surfer itself?
     shutdown,

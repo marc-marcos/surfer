@@ -85,7 +85,7 @@ fn arrow_geometry(from: Pos2, to: Pos2, width: f32) -> Option<(Pos2, Pos2, Pos2)
     Some((base, left, right))
 }
 /// Returns the vertical center of a displayed waveform item with the drawing offset applied.
-fn item_center_y(waves: &WaveData, item_ref: &DisplayedItemRef, offset: f32) -> Option<f32> {
+pub(crate) fn item_center_y(waves: &WaveData, item_ref: &DisplayedItemRef, offset: f32) -> Option<f32> {
     match waves.get_displayed_item_index(item_ref) {
         Some(vidx) => {
             let info = waves.drawing_infos.get(vidx.0)?;
@@ -228,10 +228,16 @@ impl Annotatable for ArrowAnnotation {
             None => return,
         };
 
-        // A one-headed arrow keeps its original vertical length. A double-headed arrow
-        // follows the vertical centers of both attached items.
+        // A one-headed arrow follows the attached item if present, otherwise keeps its original length.
+        // A double-headed arrow follows the vertical centers of both attached items.
         let from_y = match self.head_mode {
-            ArrowHeadMode::End => to_y - self.length,
+            ArrowHeadMode::End => match self.from.attached_item.as_ref() {
+                Some(item_ref) => match item_center_y(waves, item_ref, y_offset) {
+                    Some(y) => y,
+                    None => to_y - self.length,
+                },
+                None => to_y - self.length,
+            },
             ArrowHeadMode::Double => match self.from.attached_item.as_ref() {
                 Some(item_ref) => match item_center_y(waves, item_ref, y_offset) {
                     Some(y) => y,
