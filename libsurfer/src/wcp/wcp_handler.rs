@@ -21,7 +21,8 @@ use surfer_translation_types::ScopeRef;
 use tracing::{trace, warn};
 
 use surfer_wcp::{
-    ItemInfo, MarkerInfo, WcpCSMessage, WcpCommand, WcpResponse, WcpSCMessage,
+    AnnotationInfo, AnnotationTarget, ItemInfo, MarkerInfo, WcpCSMessage, WcpCommand, WcpResponse,
+    WcpSCMessage,
 };
 
 impl SystemState {
@@ -323,7 +324,14 @@ impl SystemState {
                                     arrow.set_name(name);
                                 }
 
+                                let mut comments_to_add: Vec<&String> = Vec::new();
                                 if let Some(comment_text) = &arrow_info.comment {
+                                    comments_to_add.push(comment_text);
+                                }
+                                for comment_text in &arrow_info.comments {
+                                    comments_to_add.push(comment_text);
+                                }
+                                for comment_text in comments_to_add {
                                     let c_id = egui::Id::new((
                                         "comment_msg",
                                         arrow.annotation_data.comment_box.message_id_source,
@@ -423,7 +431,14 @@ impl SystemState {
                                     rect.set_name(name);
                                 }
 
+                                let mut comments_to_add: Vec<&String> = Vec::new();
                                 if let Some(comment_text) = &rect_info.comment {
+                                    comments_to_add.push(comment_text);
+                                }
+                                for comment_text in &rect_info.comments {
+                                    comments_to_add.push(comment_text);
+                                }
+                                for comment_text in comments_to_add {
                                     let c_id = egui::Id::new((
                                         "comment_msg",
                                         rect.annotation_data.comment_box.message_id_source,
@@ -489,6 +504,92 @@ impl SystemState {
                             self.send_response(WcpResponse::ack);
                         } else {
                             self.send_error("remove_annotations", vec![], "No waveform loaded");
+                        }
+                    }
+                    WcpCommand::add_comment { target, comment } => {
+                        if self.user.waves.is_some() {
+                            self.save_current_canvas("Add annotation comment".to_string());
+                        }
+                        if let Some(waves) = self.user.waves.as_mut() {
+                            let max_id = self.annotation_id_source;
+                            let target_anno = waves.annotations.iter_mut().find(|a| {
+                                let aid = a.get_id();
+                                let num = (0..max_id).find(|&n| aid == egui::Id::new(("annotation", n)));
+                                match &target {
+                                    AnnotationTarget::Id(n) => num == Some(*n) || aid == egui::Id::new(("annotation", *n)),
+                                    AnnotationTarget::Name(s) => {
+                                        if let Ok(n) = s.parse::<u64>() {
+                                            if num == Some(n) || aid == egui::Id::new(("annotation", n)) {
+                                                return true;
+                                            }
+                                        }
+                                        let name = a.get_name();
+                                        name.eq_ignore_ascii_case(s) || name.contains(s.as_str())
+                                    }
+                                }
+                            });
+
+                            if let Some(anno) = target_anno {
+                                {
+                                    let comment_box = anno.get_comment_box_mut();
+                                    let c_id = egui::Id::new((
+                                        "comment_msg",
+                                        comment_box.message_id_source,
+                                    ));
+                                    comment_box.message_id_source += 1;
+                                    comment_box.message_chain.push(CommentMessage {
+                                        id: c_id,
+                                        user: "wcp".to_string(),
+                                        text: comment.clone(),
+                                    });
+                                    comment_box.visible = true;
+                                }
+                                anno.set_show_comments(true);
+                                self.invalidate_draw_commands();
+                                if let Some(ctx) = &self.context {
+                                    ctx.request_repaint();
+                                }
+                                self.send_response(WcpResponse::ack);
+                            } else {
+                                self.send_error(
+                                    "add_comment",
+                                    vec![],
+                                    &format!("Annotation target not found: {target:?}"),
+                                );
+                            }
+                        } else {
+                            self.send_error("add_comment", vec![], "No waveform loaded");
+                        }
+                    }
+                    WcpCommand::get_annotations => {
+                        if let Some(waves) = self.user.waves.as_ref() {
+                            let max_id = self.annotation_id_source;
+                            let annotations = waves
+                                .annotations
+                                .iter()
+                                .map(|a| {
+                                    let aid = a.get_id();
+                                    let num = (0..max_id)
+                                        .find(|&n| aid == egui::Id::new(("annotation", n)))
+                                        .unwrap_or(0);
+                                    let kind = a.get_type().to_string();
+                                    let name = a.get_name();
+                                    let comments = a
+                                        .get_messages()
+                                        .into_iter()
+                                        .map(|m| m.text)
+                                        .collect();
+                                    AnnotationInfo {
+                                        id: num,
+                                        kind,
+                                        name,
+                                        comments,
+                                    }
+                                })
+                                .collect();
+                            self.send_response(WcpResponse::get_annotations { annotations });
+                        } else {
+                            self.send_error("get_annotations", vec![], "No waveform loaded");
                         }
                     }
                     WcpCommand::reload => {
@@ -654,6 +755,8 @@ impl SystemState {
             "add_rectangles",
             "clear_annotations",
             "remove_annotations",
+            "add_comment",
+            "get_annotations",
             "set_viewport_range_to",
         ]
         .into_iter()

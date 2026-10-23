@@ -34,9 +34,9 @@ impl Comment {
             annotation_id,
             rect: egui::Rect::ZERO,
             color: egui::Color32::WHITE,
-            offset: Pos2::ZERO,
+            offset: Pos2 { x: 20.0, y: 10.0 },
             anchor: Pos2::ZERO,
-            size: Pos2 { x: 100., y: 50. },
+            size: Pos2 { x: 120., y: 50. },
             message_chain: Vec::new(),
             new_text: String::new(),
             name: String::new(),
@@ -75,11 +75,12 @@ impl egui::Widget for &mut Comment {
             let background_stroke_shape = ui.painter().add(egui::Shape::Noop);
 
             // Collapsible State
-            // Load whether this specific comment is open or closed from egui's persistent storage
+            // Load whether this specific comment is open or closed from egui's persistent storage.
+            // Open by default if there are messages to display.
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
                 ui.make_persistent_id(self.id),
-                false,
+                !self.message_chain.is_empty(),
             );
 
             // Header Logic

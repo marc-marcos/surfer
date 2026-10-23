@@ -38,6 +38,7 @@ pub enum WcpResponse {
     add_markers { ids: Vec<DisplayedItemRef> },
     add_arrows { ids: Vec<u64> },
     add_rectangles { ids: Vec<u64> },
+    get_annotations { annotations: Vec<AnnotationInfo> },
     ack,
 }
 
@@ -111,6 +112,8 @@ pub struct ArrowInfo {
     pub name: Option<String>,
     #[serde(default)]
     pub comment: Option<String>,
+    #[serde(default)]
+    pub comments: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -127,6 +130,23 @@ pub struct RectInfo {
     pub name: Option<String>,
     #[serde(default)]
     pub comment: Option<String>,
+    #[serde(default)]
+    pub comments: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(untagged)]
+pub enum AnnotationTarget {
+    Id(u64),
+    Name(String),
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct AnnotationInfo {
+    pub id: u64,
+    pub kind: String,
+    pub name: String,
+    pub comments: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -236,6 +256,13 @@ pub enum WcpCommand {
     clear_annotations,
     /// Removes the specified annotations by numeric ID.
     remove_annotations { ids: Vec<u64> },
+    /// Adds a comment to an annotation specified by target (numeric ID or name).
+    add_comment {
+        target: AnnotationTarget,
+        comment: String,
+    },
+    /// Responds with [`WcpResponse::get_annotations`] containing a list of current annotations.
+    get_annotations,
     /// Shut down the WCP server.
     // FIXME: What does this mean? Does it kill the server, the current connection or surfer itself?
     shutdown,
